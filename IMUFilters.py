@@ -19,7 +19,6 @@ import time
 def AvgCali(mpu9250, depth,dly):
         #Utilize a for loop to gather out biases
         biases=[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]
-        print("\nCalibrating IMU...\n")
         for x in range(depth):
             accel = mpu9250.readAccel()
             gyro = mpu9250.readGyro()
@@ -34,7 +33,6 @@ def AvgCali(mpu9250, depth,dly):
             biases[7]=biases[7]+mag['y']/depth;
             biases[8]=biases[8]+mag['z']/depth;
             time.sleep(dly)
-        print("Calibration Complete\n")
         return biases;
 
 #The window will be a structure

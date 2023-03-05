@@ -1,8 +1,20 @@
 from setup import *
 
-power = 50
+drive.setAllPowers(10)
+drive.update()
+
+
 while True:
-    drive.setAllPowers(power)
-    drive.reduceLeft(2 *  power)
-    drive.update()
+    Sensor.updateAll()
+    Position.update()
+
+    print(Position)
+    follow(leftMotor)
+    print(f"Heading: {Sensor.Inertial.heading}")
+
+    print("")
+
     sleep(period)
+
+
+raise KeyboardInterrupt

@@ -2,7 +2,7 @@ import grovepi
 import brickpi3
 import sys
 from time import sleep, time
-from math import copysign, sqrt
+from math import copysign, pi, sin, cos, radians
 from MPU9250 import MPU9250
 from IMUFilters import *
 import numpy as np
@@ -14,10 +14,22 @@ BPPort = {1:BP.PORT_1, 2:BP.PORT_2, 3:BP.PORT_3, 4:BP.PORT_4,
                 "A":BP.PORT_A,"B":BP.PORT_B, "C":BP.PORT_C, "D":BP.PORT_D}
 
 basePower = 65
-reduce = basePower * 0.8
+reduce = basePower * 0.15
+maxDistance = 200
 maxPower = 90
+minPower = 20
 period = 0.02 # seconds
-g = 9.81 #m/s^2
+g = 9.81 # m/s^2
+wheelRadius = 1.42875 # cm
+ratio = 0.5
+rotationDist = 2 * pi * wheelRadius * ratio # cm
+
+robotWidth = 22 # cm
+wallDistance = (40 - 22) / 2  # cm
+
+# table: 2.6  my table: 3.0
+magicGyroConstant = 3.0
+
 
 
 # -------------------- Sensor setup --------------------
@@ -32,11 +44,18 @@ class sensorType():
     colorReflect = BP.SENSOR_TYPE.EV3_COLOR_REFLECTED
     colorAmbient = BP.SENSOR_TYPE.EV3_COLOR_AMBIENT
     gyro = BP.SENSOR_TYPE.EV3_GYRO_ABS_DPS
+    ultraSonicNXT = BP.SENSOR_TYPE.NXT_ULTRASONIC
     IMU = 7
     motor = 8
+    inertialRotation = 9
+    inertialHeading = 10
+    
     
 
 class Sensor():
+
+    allSensors = []
+    Inertial = None
 
     def __init__(self, type, mode, pin, biased = False, bias = 0, multiplier = 1) -> None:
         self.type = type
@@ -46,8 +65,9 @@ class Sensor():
         self.biased = biased
         self.bias = bias
         self.multiplier = multiplier
+        self.allSensors.append(self)
         if(type == sensorType.grove): grovepi.pinMode(pin, "INPUT")
-        if (type == sensorType.brick): BP.set_sensor_type(BPPort[pin], self.mode)
+        elif (type == sensorType.brick): BP.set_sensor_type(BPPort[pin], self.mode)
     
     def update(self) -> float:
         if(self.type == sensorType.grove): 
@@ -58,17 +78,33 @@ class Sensor():
         elif (self.type == sensorType.brick):
             if(self.mode == sensorType.motor): self.value = BP.get_motor_encoder(BPPort[self.pin])
             else:                              self.value = BP.get_sensor(BPPort[self.pin])
+        elif (self.type == sensorType.IMU):
+            if (self.mode == sensorType.inertialRotation): self.value = self.Inertial.rotation
+            elif (self.mode == sensorType.inertialHeading): self.value = self.Inertial.heading
 
 
         if self.biased: self.value = (self.value + self.bias) * self.multiplier
         return self.value
+    
+    @classmethod
+    def updateAll(cls):
+        cls.Inertial.update()
+        for sensor in cls.allSensors:
+            sensor.update()
+        
 
 class IMUWrap():
+    
+    driveRef = None
 
     def __init__(self) -> None:
-        self.accelBias : np.ndarray = None
-        self.gyroBias  : np.ndarray = None
-        self.magBias   : np.ndarray = None
+        self.accelBias : np.ndarray = np.array([0, 0, 0], dtype="float64")
+        self.gyroBias  : np.ndarray = np.array([0, 0, 0], dtype="float64")
+        self.magBias   : np.ndarray = np.array([0, 0, 0], dtype="float64")
+
+        self.accelNull : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
+        self.gyroNull  : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
+        self.magNull   : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
 
         self.acceleration : np.ndarray = None
         self.gyro         : np.ndarray = None
@@ -76,42 +112,94 @@ class IMUWrap():
 
         self.magThreshold = 0
 
-        self.velocity = np.array() # meters/sec
-        self.position = np.array() # meters
+        self.velocity = np.array([0, 0, 0], dtype="float64") # meters/sec
+        self.position = np.array([0, 0, 0], dtype="float64") # meters
 
-    def getBias(self):
+        self.rotation = 0 # degrees
+        self.heading = 0 # degrees (0 - 360)
+
+    def setBias(self):
         biases = AvgCali(IMU, 100, 0.04)
         # splits biases into 3 sublists and assigns them accordingly
         self.accelBias, self.gyroBias, self.magBias = [np.array(biases[x: x+3]) for x in range(0, len(biases), 3)]
 
-    def update(self, kinematics = False):
+    def getNullBand(self, maxTime = period * 250):
+        multi = 1.1
+        elapsed = 0
+        index = 0
+        accelData = np.ndarray((3, int(maxTime/period + 1)))
+
+        while elapsed < maxTime:
+            Sensor.Inertial.update(kinematics = False)
+            for i in range(3):
+                accelData[i][index] = Sensor.Inertial.acceleration[i]
+
+            elapsed += period
+            index += 1
+
+            time.sleep(period)
+
+        self.accelNull = np.ndarray((3, 2))
+        # self.gyroNull = np.ndarray((3, 2))
+        # self.magNull = np.ndarray((3, 2))
+
+        for i in range(3):
+            self.accelNull[i][0] = accelData[i].min() * multi
+            self.accelNull[i][1] = accelData[i].max() * multi
+            # self.gyroNull[i][0] = accelData[i].min() * multi
+            # self.gyroNull[i][1] = accelData[i].max() * multi
+            # self.magNull[i][0] = accelData[i].min() * multi
+            # self.magNull[i][1] = accelData[i].max() * multi
+    
+
+
+    def update(self, kinematics = False, verbose = False, selection = None):
         self.acceleration = np.array([float(x) for x in IMU.readAccel().values()])  - self.accelBias
         self.gyro         = np.array([float(x) for x in IMU.readGyro().values()])   - self.gyroBias
         self.magnetic     = np.array([float(x) for x in IMU.readMagnet().values()]) - self.magBias
 
-        if kinematics: self.kinematics()
+        # for i in range(3):
+        #     if self.acceleration[i] > self.accelNull[i][0] and self.acceleration[i] < self.accelNull[i][1]:
+        #         self.acceleration[i] = 0
+
+        # if kinematics: self.kinematics()
+
+        self.updateRotation()
+
+        if verbose:
+            if selection == 1:
+                print("Acceleration: ", self.acceleration)
+            elif selection == 2:
+                print("Gyro: ", self.gyro)
+            elif selection == 3:
+                print("Magnetic: ", self.magnetic)
+
     
     @property
     def magneticMagnitude(self) -> float:
         return np.sqrt((self.magnetic**2).sum())
     
     @property
-    def velocityCm(self) -> float: # returns the velocity in cm
+    def velocityCm(self) -> np.ndarray: # returns the velocity in cm
         return self.velocity * 100
     
     @property
-    def positionCm(self) -> float: # returns the position in cm
+    def positionCm(self) -> np.ndarray: # returns the position in cm
         return self.position * 100
 
     def onBeacon(self) -> bool:
         return self.magneticMagnitude > self.magThreshold
 
     def kinematics(self):
-        acceleration = self.acceleration * g
+        acceleration   = self.acceleration * g
         self.velocity += acceleration * period
         self.position += self.velocity * period
 
-
+    def updateRotation(self):
+        self.rotation += self.gyro[2] * period * magicGyroConstant
+        self.heading = copysign(self.rotation % 360, self.rotation) 
+        if self.heading < 0: self.heading += 360
+        # print(f"Rotation: {self.rotation:.2f}")
 
 
 
@@ -132,7 +220,14 @@ class Motor():
         BP.set_motor_position(self.pin, position)
 
     def update(self):
+        if abs(self.power) > maxPower:
+            self.power = copysign(maxPower, self.power)
+        elif abs(self.power) < minPower:
+            self.power = copysign(minPower, self.power)
         BP.set_motor_power(self.pin, self.power - 2 * self.power * self.reverse)
+
+    def stop(self):
+        BP.set_motor_power(self.pin, 0)
 
     def getPosition(self):
         BP.get_motor_encoder(BPPort[self.pin])
@@ -143,16 +238,20 @@ class DriveTrain():
     def __init__(self, leftpin, rightpin) -> None:
         self.left  = Motor(leftpin)
         self.right = Motor(rightpin)
+        self.reverse = False
 
     def setAllPowers(self, power):
         self.left.setPower(power)
         self.right.setPower(power)
+        self.reverse = power < 0
     
     def reduceLeft(self, reduce):
-        self.left.power -= copysign(reduce, self.left.power)
+        # self.left.power -= copysign(reduce, self.left.power)
+        self.left.power -= reduce
 
     def reduceRight(self, reduce):
-        self.right.power -= copysign(reduce, self.right.power)
+        # self.right.power -= copysign(reduce, self.right.power)
+        self.right.power -= reduce
 
     def setLeft(self, power):
         self.left.setPower(power)
@@ -164,16 +263,41 @@ class DriveTrain():
         # :param direction: True = Right, False = left
         self.setRight(power - 2 * power * direction)
         self.setLeft(power - 2 * power * (not direction))
+
+    def stop(self):
+        self.left.stop()
+        self.right.stop()
     
     def update(self):
         self.left.update()
         self.right.update()
 
+# -------------------- Position Tracker --------------------
+class PositionTracker():
+
+    def __init__(self, left, right) -> None:
+        self.encoders = [left, right]
+        self.lastEncoder = [0, 0]
+        
+        self.position = np.array([0.0, 0.0], dtype="float64") # x, y (cm)
+
+    def __str__(self) -> str:
+        return f"X: {self.position[0]:.6f}, Y: {self.position[1]:.6f}"
+
+    def update(self):
+        self.position[0] += (self.encoders[0].value - self.lastEncoder[0]) / 360 * rotationDist * -sin(radians(Sensor.Inertial.heading))
+        self.position[1] += (self.encoders[0].value - self.lastEncoder[0]) / 360 * rotationDist * cos(radians(Sensor.Inertial.heading))
+
+        self.lastEncoder[0] = self.encoders[0].value
+        self.lastEncoder[1] = self.encoders[1].value
+
 # -------------------- PID --------------------
 
 class PIDController():
 
-    def __init__(self, Kp, Ki, Kd, sensor, target = 0, derivativeMax = 30) -> None:
+    maxOutput = maxPower - 18
+
+    def __init__(self, Kp, Ki, Kd, sensor, target = 0, margin = 1, derivativeMax = 30, axis = None) -> None:
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
@@ -184,6 +308,8 @@ class PIDController():
         self.lastError  = 0
         self.totalError = 0
 
+        self.margin = 1
+
         self.derivativeMax = derivativeMax
 
         self.partialOut    = 0
@@ -191,25 +317,29 @@ class PIDController():
         self.derivativeOut = 0
         self.output        = 0
 
+        self.axis = axis
+
     # --------------- update section ---------------
-    def update(self, interest = "", verbose = False):
+    def update(self, verbose = False):
         self.lastError = self.error
-        # if self.sensor.__class__ is IMUWrap:
-        #     if interest.lower == "p": self.error = self.target - self.sensor.positionCm
-        #     else: self.error = self.target - self.sensor.velocityCm
-        # else:
-        self.error = self.target - self.sensor.update()
+        if self.axis != None:
+            self.error = self.target - self.sensor.value[self.axis]
+        else:
+            self.error = self.target - self.sensor.value
 
 
         self.totalError += self.error * period * (abs(self.integralOut) <= maxPower)
         self.setOutput()
         if verbose:
-            print(f"Current Error:     {self.error:.2f}")
-            print(f"Partial output:    {self.partialOut:.2f}")
-            print(f"Integral output:   {self.integralOut:.2f}")
-            print(f"Derivative output: {self.derivativeOut:.2f}")
-            print(f"Output:            {self.output:.2f}\n")
-        
+            self.printInfo()
+    
+    def printInfo(self):
+        print(f"Target:            {self.target:.2f}")
+        print(f"Current Error:     {self.error:.2f}")
+        print(f"Partial output:    {self.partialOut:.2f}")
+        print(f"Integral output:   {self.integralOut:.2f}")
+        print(f"Derivative output: {self.derivativeOut:.2f}")
+        print(f"Output:            {self.output:.2f}\n")
     
     def setOutput(self):
         self.partialOut    = self.error * self.Kp
@@ -217,6 +347,23 @@ class PIDController():
         self.derivativeOut = self.Kd*(self.error - self.lastError)/period
 
         self.output = min([self.partialOut + self.integralOut + (self.derivativeOut * (abs(self.derivativeOut) <= self.derivativeMax)), maxPower])
+        self.output = copysign(min([abs(self.output), self.maxOutput]), self.output)
+
+    def setTarget(self, target):
+        self.target = target
+
+
+    def goToTarget(self, motorFunc):
+        goodFrames = 0
+        while goodFrames <= 3:
+            Sensor.updateAll()
+            self.update(verbose = True)
+            motorFunc(self.output)
+            time.sleep(period)
+            goodFrames = goodFrames + 1 if abs(self.error) < self.margin else 0
+        
+        # motorFunc(0)
+
 
 
 
