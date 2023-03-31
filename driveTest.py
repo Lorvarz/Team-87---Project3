@@ -1,18 +1,21 @@
 from setup import *
 
-drive.setAllPowers(10)
-drive.update()
+# drive.setAllPowers(60)
+# drive.update()
+
+target = 10
 
 
 while True:
-    Sensor.updateAll()
+    # Sensor.updateAll()
+    driveStraight(basePower)
+
     Position.update()
 
-    print(Position)
-    follow(leftMotor)
-    print(f"Heading: {Sensor.Inertial.heading}")
+    print(f"{Position}   {PositionTracker.heading:3}\n")
+    if (Position.y > target): break
 
-    print("")
+    # print("")
 
     sleep(period)
 

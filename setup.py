@@ -11,15 +11,16 @@ Front = Sensor(sensorType.brick, sensorType.ultraSonicNXT, 1)
 IR = Sensor(sensorType.grove, sensorType.analog, 2)
 IR2 = Sensor(sensorType.grove, sensorType.analog, 1)
 
-# Heading     = Sensor(sensorType.IMU, sensorType.inertialHeading, 0)
-Rotation     = Sensor(sensorType.IMU, sensorType.inertialRotation, 0)
+LegoGyro = Sensor(sensorType.brick, sensorType.gyro, 4)
 
-PIDGyro     = PIDController(1.2, 0, 0.06, Rotation, 0)
+PIDGyro     = PIDController(1.3, 0.005, 0.06, LegoGyro, 0, 2)
+PIDGyro.maxOutput -= 15
 
 leftMotor  = Sensor(sensorType.brick, sensorType.motor, "B")
 rightMotor = Sensor(sensorType.brick, sensorType.motor, "C")
 
 Position = PositionTracker(leftMotor, rightMotor)
+PositionTracker.gyro = LegoGyro
 
 # --* Drivetrain *--
 drive = DriveTrain("B", "C")
@@ -44,6 +45,7 @@ sys.excepthook = customHook
 
 try:
     Front.update()
+    LegoGyro.update()
 except brickpi3.SensorError:
     print("Configuring...")
     error = True
@@ -51,6 +53,7 @@ except brickpi3.SensorError:
         sleep(0.1)
         try:
             Front.update()
+            LegoGyro.update()
             error = False
         except brickpi3.SensorError:
             error = True
@@ -61,7 +64,7 @@ except brickpi3.SensorError:
 
 # biasMulti = 0.2
 
-if (input("want to calibrate? (y/n): ") == "y"):
+if (input("Calibrate Magnetic sensor? (y/n): ") == "y"):
     Sensor.Inertial.setBias()
     print("Got IMU Bias")
     # Sensor.Inertial.getNullBand()
@@ -86,7 +89,6 @@ def driveStraight(base):
     drive.setAllPowers(base)
     Sensor.updateAll()
     PIDGyro.update()
-    PIDGyro.printInfo()
 
     drive.reduceRight(PIDGyro.output)
     drive.reduceLeft(-PIDGyro.output)

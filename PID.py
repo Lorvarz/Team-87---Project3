@@ -1,11 +1,13 @@
 import grovepi
 import brickpi3
 import sys
+from enum import Enum
 from time import sleep, time
 from math import copysign, pi, sin, cos, radians
 from MPU9250 import MPU9250
 from IMUFilters import *
 import numpy as np
+from Mapping import *
 
 BP = brickpi3.BrickPi3()
 IMU = MPU9250()
@@ -17,18 +19,18 @@ basePower = 65
 reduce = basePower * 0.15
 maxDistance = 200
 maxPower = 90
-minPower = 20
+minPower = 25
 period = 0.02 # seconds
 g = 9.81 # m/s^2
 wheelRadius = 1.42875 # cm
 ratio = 0.5
-rotationDist = 2 * pi * wheelRadius * ratio # cm
+rotationDist = 2 * pi * wheelRadius * ratio + 0.83 # cm
 
 robotWidth = 22 # cm
 wallDistance = (40 - 22) / 2  # cm
 
 # table: 2.6  my table: 3.0
-magicGyroConstant = 3.0
+magicGyroConstant = 3.1
 
 
 
@@ -67,7 +69,7 @@ class Sensor():
         self.multiplier = multiplier
         self.allSensors.append(self)
         if(type == sensorType.grove): grovepi.pinMode(pin, "INPUT")
-        elif (type == sensorType.brick): BP.set_sensor_type(BPPort[pin], self.mode)
+        elif (type == sensorType.brick and mode != sensorType.motor): BP.set_sensor_type(BPPort[pin], self.mode)
     
     def update(self) -> float:
         if(self.type == sensorType.grove): 
@@ -77,6 +79,7 @@ class Sensor():
             elif(self.mode == sensorType.hall): self.value = not grovepi.digitalRead(self.pin)
         elif (self.type == sensorType.brick):
             if(self.mode == sensorType.motor): self.value = BP.get_motor_encoder(BPPort[self.pin])
+            elif(self.mode == sensorType.gyro):  self.value = BP.get_sensor(BPPort[self.pin])[0]
             else:                              self.value = BP.get_sensor(BPPort[self.pin])
         elif (self.type == sensorType.IMU):
             if (self.mode == sensorType.inertialRotation): self.value = self.Inertial.rotation
@@ -197,9 +200,9 @@ class IMUWrap():
 
     def updateRotation(self):
         self.rotation += self.gyro[2] * period * magicGyroConstant
-        self.heading = copysign(self.rotation % 360, self.rotation) 
+        self.heading = copysign(abs(self.rotation) % 360, self.rotation) 
         if self.heading < 0: self.heading += 360
-        # print(f"Rotation: {self.rotation:.2f}")
+        
 
 
 
@@ -275,6 +278,9 @@ class DriveTrain():
 # -------------------- Position Tracker --------------------
 class PositionTracker():
 
+    gyro = None
+    heading = 0
+
     def __init__(self, left, right) -> None:
         self.encoders = [left, right]
         self.lastEncoder = [0, 0]
@@ -282,20 +288,40 @@ class PositionTracker():
         self.position = np.array([0.0, 0.0], dtype="float64") # x, y (cm)
 
     def __str__(self) -> str:
-        return f"X: {self.position[0]:.6f}, Y: {self.position[1]:.6f}"
+        return f"X: {self.position[0]:6.2f}, Y: {self.position[1]:6.2f}"
+    
+    @classmethod
+    def updateHeading(cls):
+        cls.heading = copysign(abs(cls.gyro.value) % 360, cls.gyro.value)
+        if cls.heading < 0: cls.heading += 360
+
 
     def update(self):
-        self.position[0] += (self.encoders[0].value - self.lastEncoder[0]) / 360 * rotationDist * -sin(radians(Sensor.Inertial.heading))
-        self.position[1] += (self.encoders[0].value - self.lastEncoder[0]) / 360 * rotationDist * cos(radians(Sensor.Inertial.heading))
+        self.updateHeading()
+        avgReading = (self.encoders[0].value - self.lastEncoder[0] + self.encoders[1].value - self.lastEncoder[1]) / 2
+        self.position[0] += avgReading / (360) * rotationDist * sin(radians(self.heading))
+        self.position[1] += avgReading / (360) * rotationDist * cos(radians(self.heading))
 
+        self.setLast()
+
+    def setLast(self, update = False):
+        if update:
+            for encoder in self.encoders: encoder.update()
         self.lastEncoder[0] = self.encoders[0].value
         self.lastEncoder[1] = self.encoders[1].value
+
+    @property
+    def x(self) -> float:
+        return self.position[0]
+    
+    @property
+    def y(self) -> float:
+        return self.position[1]
 
 # -------------------- PID --------------------
 
 class PIDController():
 
-    maxOutput = maxPower - 18
 
     def __init__(self, Kp, Ki, Kd, sensor, target = 0, margin = 1, derivativeMax = 30, axis = None) -> None:
         self.Kp = Kp
@@ -318,6 +344,7 @@ class PIDController():
         self.output        = 0
 
         self.axis = axis
+        self.maxOutput = maxPower - 18
 
     # --------------- update section ---------------
     def update(self, verbose = False):
@@ -334,7 +361,7 @@ class PIDController():
             self.printInfo()
     
     def printInfo(self):
-        print(f"Target:            {self.target:.2f}")
+        print(f"Reading:           {self.sensor.value:.2f}")
         print(f"Current Error:     {self.error:.2f}")
         print(f"Partial output:    {self.partialOut:.2f}")
         print(f"Integral output:   {self.integralOut:.2f}")
@@ -355,7 +382,7 @@ class PIDController():
 
     def goToTarget(self, motorFunc):
         goodFrames = 0
-        while goodFrames <= 3:
+        while goodFrames <= 2:
             Sensor.updateAll()
             self.update(verbose = True)
             motorFunc(self.output)
@@ -364,6 +391,75 @@ class PIDController():
         
         # motorFunc(0)
 
+
+
+
+class NavigationOption(Enum):
+    Drive = 0
+    Turn = 1
+    check = 2
+
+class Direction(Enum):
+    up = 0
+    right = 1
+    down = 2
+    left = 3
+
+class Instruction():
+
+    def __init__(self, option : NavigationOption, direction : Direction) -> None:
+        self.command = option
+        self.direction = direction
+
+
+class Tile():
+    pass
+
+
+
+class Navigator():
+
+    def __init__(self, initialDirection, positionTracker, distanceSensors, IR, magnetic, map) -> None:
+        self.direction : Direction = initialDirection
+        self.positionTracker = positionTracker
+        self.distanceSensors : dict[Direction , Sensor] = distanceSensors
+        self.distances : dict[Direction , float] = {Direction.up : None, Direction.right : None, 
+                                                    Direction.down : None, Direction.left : None}
+        self.IRSensor = IR
+        self.magneticSensor = magnetic
+        self.map = map
+
+
+    
+    def update(self):
+        self.updatePosition()
+        self.updateDirection()
+        self.updateDistances()
+        self.updateOtherSensors()
+        self.flushMap()
+
+
+    def updatePosition(self):
+        self.positionTracker.update()
+
+    
+    def updateDirection(self):
+        self.direction = Direction(self.positionTracker.heading // 90)
+
+
+    def updateDistances(self):
+        for sensorDirection, sensor in self.distanceSensors.items():
+            sensor.update()
+            finalDir = (sensorDirection.value + self.direction.value) % 4
+            self.distances[Direction(finalDir)] = sensor.value
+        self.distances[Direction((self.direction.value + 2) % 4)] = None
+    
+    def updateOtherSensors(self):
+        self.IRSensor.update()
+        self.magneticSensor.update()
+
+
+    
 
 
 
