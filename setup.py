@@ -3,7 +3,8 @@ from PID import *
 # --------------------- Sensors and PID setup --------------------------
 
 # --* Sensors *--
-Sensor.Inertial = IMUWrap()
+magneticSensor = IMUWrap()
+Sensor.Inertial = magneticSensor
 Left  = Sensor(sensorType.grove, sensorType.ultraSonic, 2)
 Right = Sensor(sensorType.grove, sensorType.ultraSonic, 3)
 Front = Sensor(sensorType.brick, sensorType.ultraSonicNXT, 1)
@@ -13,11 +14,13 @@ IR2 = Sensor(sensorType.grove, sensorType.analog, 1)
 
 LegoGyro = Sensor(sensorType.brick, sensorType.gyro, 4)
 
-PIDGyro     = PIDController(1.3, 0.005, 0.06, LegoGyro, 0, 2)
+PIDGyro     = PIDController(1.3, 0.005, 0.04, LegoGyro, 0, 2)
 PIDGyro.maxOutput -= 15
 
 leftMotor  = Sensor(sensorType.brick, sensorType.motor, "B")
 rightMotor = Sensor(sensorType.brick, sensorType.motor, "C")
+
+cargoMotor = Motor("A")
 
 Position = PositionTracker(leftMotor, rightMotor)
 PositionTracker.gyro = LegoGyro
@@ -36,6 +39,11 @@ IMUWrap.driveRef = drive
 def customHook(exctype, value, traceback):
     drive.setAllPowers(0)
     BP.reset_all()
+    try:
+        global areaMap
+        areaMap.makeMap()
+    except:
+        pass
     sys.__excepthook__(exctype, value, traceback)
 
 sys.excepthook = customHook
@@ -59,6 +67,31 @@ except brickpi3.SensorError:
             error = True
     print("Configured!\n")
 
+# --------------------- Map creation --------------------
+
+if (input("Create map? (y/n): ") == "y"):
+    scale = int(input("Enter the scale of the tiles: "))
+    sideLength = int(input("Enter the number of tiles in a side: "))
+    origin = [int(i) for i in input("Enter the origin position: ").split(",")]
+
+    areaMap = Map((sideLength, sideLength))
+    areaMap.setup(origin, scale)
+    Position.x = origin[0] * scale
+    Position.y = origin[1] * scale
+
+    print("Map created")
+
+    initialDirection = Direction(int(input("Enter the initial direction: ")))
+    distanceSensors = {Direction.up : Front, 
+                       Direction.left : Left, 
+                       Direction.right : Right}
+
+    centralNav = Navigator(initialDirection, Position, distanceSensors, IR, magneticSensor, areaMap)
+
+    print("Navigator created")
+
+
+
 
 # --------------------- Line sensors & IMU calibration --------------------
 
@@ -66,11 +99,14 @@ except brickpi3.SensorError:
 
 if (input("Calibrate Magnetic sensor? (y/n): ") == "y"):
     Sensor.Inertial.setBias()
-    print("Got IMU Bias")
-    # Sensor.Inertial.getNullBand()
-    # print("Got IMU Null Band")
+    print("Got Magnetic Bias")
 
-    print("Calibration over\n")
+if (input("Calibrate IR sensor? (y/n): ") == "y"):
+    IR.calibrateBias()
+    IR2.calibrateBias()
+    print("Calibrated IR sensor")
+
+print("Calibration over\n")
 
 
 
@@ -80,10 +116,9 @@ def turnRight(power):
     drive.turn(True, power)
     drive.update()
 
-def turnLeft(power):
-    drive.turn(False, power)
+def driveForward(power):
+    drive.setAllPowers(power)
     drive.update()
-
 
 def driveStraight(base):
     drive.setAllPowers(base)
@@ -96,30 +131,26 @@ def driveStraight(base):
     drive.update()
     
 
-def driveForward(power):
-    drive.setAllPowers(power)
-    drive.update()
-
 def turnToHeading(target):
     PIDGyro.setTarget(target)
     PIDGyro.goToTarget(turnRight)
     drive.stop()
 
 def turnRelative(distance):
-    PIDGyro.setTarget(PIDGyro.target + distance)
+    PIDGyro.setTarget(Position.rotation + distance)
     PIDGyro.goToTarget(turnRight)
     drive.stop()
 
 
 def checkWallDistance():
-    if (Left.value < wallDistance):
+    if (Left.update() < wallDistance):
         drive.reduceLeft(-reduce)
-    elif(Right.value < wallDistance):
+    elif(Right.update() < wallDistance):
         drive.reduceRight(-reduce)
 
 def driveToWall():
     Sensor.updateAll()
-    while (Front.value > wallDistance * 1.1):
+    while (Front.value > wallDistance * 1.3):
         driveForward(40)
         sleep(period)
         Sensor.updateAll()
@@ -130,7 +161,7 @@ def driveToWall():
 def runHallway():
     Sensor.updateAll()
     
-    startRotation = Sensor.Inertial.rotation
+    startRotation = LegoGyro.value
     PIDGyro.setTarget(startRotation)
 
     while not (Left.value < 40 and Right.value < 40):
@@ -138,7 +169,6 @@ def runHallway():
 
         sleep(period)
 
-
     Sensor.updateAll()
 
     while (Left.value < 40 and Right.value < 40):
@@ -152,50 +182,32 @@ def runHallway():
     
     driveToWall()
 
-
     if Left.value > 40:
         turnRelative(-90)
     else:
-        turnRelative(90)
+        turnRelative(100)
 
-"""
-def runHallway():
-    Sensor.updateAll()
 
-    startRotation = Sensor.Inertial.rotation
+def driveDistance(distance):
+    select = 1 if Position.direction.value % 2 == 0 else 0
+    start = Position.position[select]
 
-    while not (Left.value < 40 and Right.value < 40):
-        driveForward(basePower)
+    PIDGyro.setTarget(Position.rotation)
 
-        checkWallDistance()
-
-        drive.update()
+    while (abs(Position.position[select] - start) < distance):
+        driveStraight(basePower + (distance - abs(Position.position[select] - start)))
         sleep(period)
-        Sensor.updateAll()
+        Position.update()
 
+    drive.stop()
 
-    Sensor.updateAll()
+def dropCargo():
+    cargoMotor.goToPosition(-110)
 
-    while (Left.value < 40 and Right.value < 40):
-        driveForward(basePower)
-
-        checkWallDistance()
-
-        drive.update()
-        sleep(period)
-        Sensor.updateAll()
-
-    turnToHeading(startRotation)
+def closeCargo():
+    cargoMotor.goToPosition(10)
     
-    driveToWall()
-
-
-    if Left.value > 40:
-        turnToHeading(-90)
-    else:
-        turnToHeading(90)
-
-"""
+    
 
 
 

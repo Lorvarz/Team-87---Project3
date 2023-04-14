@@ -7,15 +7,14 @@ from math import copysign, pi, sin, cos, radians
 from MPU9250 import MPU9250
 from IMUFilters import *
 import numpy as np
-from Mapping import *
 
 BP = brickpi3.BrickPi3()
-IMU = MPU9250()
+# IMU = MPU9250()
 
 BPPort = {1:BP.PORT_1, 2:BP.PORT_2, 3:BP.PORT_3, 4:BP.PORT_4, 
                 "A":BP.PORT_A,"B":BP.PORT_B, "C":BP.PORT_C, "D":BP.PORT_D}
 
-basePower = 65
+basePower = 60
 reduce = basePower * 0.15
 maxDistance = 200
 maxPower = 90
@@ -48,9 +47,8 @@ class sensorType():
     gyro = BP.SENSOR_TYPE.EV3_GYRO_ABS_DPS
     ultraSonicNXT = BP.SENSOR_TYPE.NXT_ULTRASONIC
     IMU = 7
-    motor = 8
-    inertialRotation = 9
-    inertialHeading = 10
+    IMUmag = 8
+    motor = 9
     
     
 
@@ -82,12 +80,19 @@ class Sensor():
             elif(self.mode == sensorType.gyro):  self.value = BP.get_sensor(BPPort[self.pin])[0]
             else:                              self.value = BP.get_sensor(BPPort[self.pin])
         elif (self.type == sensorType.IMU):
-            if (self.mode == sensorType.inertialRotation): self.value = self.Inertial.rotation
-            elif (self.mode == sensorType.inertialHeading): self.value = self.Inertial.heading
+            if (self.mode == sensorType.IMUmag): self.value = self.Inertial.magnetic
 
 
         if self.biased: self.value = (self.value + self.bias) * self.multiplier
         return self.value
+    
+    def calibrateBias(self, samples = 100, delay = period, multi = 1.2):
+        self.biased = True
+        recordings = []
+        for i in range(samples):
+            recordings.append(self.update())
+            sleep(delay)
+        self.bias = -np.mean(recordings) * multi
     
     @classmethod
     def updateAll(cls):
@@ -98,113 +103,31 @@ class Sensor():
 
 class IMUWrap():
     
-    driveRef = None
-
     def __init__(self) -> None:
-        self.accelBias : np.ndarray = np.array([0, 0, 0], dtype="float64")
-        self.gyroBias  : np.ndarray = np.array([0, 0, 0], dtype="float64")
         self.magBias   : np.ndarray = np.array([0, 0, 0], dtype="float64")
 
-        self.accelNull : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
-        self.gyroNull  : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
         self.magNull   : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
 
-        self.acceleration : np.ndarray = None
-        self.gyro         : np.ndarray = None
         self.magnetic     : np.ndarray = None
 
         self.magThreshold = 0
 
-        self.velocity = np.array([0, 0, 0], dtype="float64") # meters/sec
-        self.position = np.array([0, 0, 0], dtype="float64") # meters
-
-        self.rotation = 0 # degrees
-        self.heading = 0 # degrees (0 - 360)
-
     def setBias(self):
         biases = AvgCali(IMU, 100, 0.04)
-        # splits biases into 3 sublists and assigns them accordingly
-        self.accelBias, self.gyroBias, self.magBias = [np.array(biases[x: x+3]) for x in range(0, len(biases), 3)]
+        self.magBias = np.array(biases[-3:len(biases)])
 
-    def getNullBand(self, maxTime = period * 250):
-        multi = 1.1
-        elapsed = 0
-        index = 0
-        accelData = np.ndarray((3, int(maxTime/period + 1)))
-
-        while elapsed < maxTime:
-            Sensor.Inertial.update(kinematics = False)
-            for i in range(3):
-                accelData[i][index] = Sensor.Inertial.acceleration[i]
-
-            elapsed += period
-            index += 1
-
-            time.sleep(period)
-
-        self.accelNull = np.ndarray((3, 2))
-        # self.gyroNull = np.ndarray((3, 2))
-        # self.magNull = np.ndarray((3, 2))
-
-        for i in range(3):
-            self.accelNull[i][0] = accelData[i].min() * multi
-            self.accelNull[i][1] = accelData[i].max() * multi
-            # self.gyroNull[i][0] = accelData[i].min() * multi
-            # self.gyroNull[i][1] = accelData[i].max() * multi
-            # self.magNull[i][0] = accelData[i].min() * multi
-            # self.magNull[i][1] = accelData[i].max() * multi
-    
-
-
-    def update(self, kinematics = False, verbose = False, selection = None):
-        self.acceleration = np.array([float(x) for x in IMU.readAccel().values()])  - self.accelBias
-        self.gyro         = np.array([float(x) for x in IMU.readGyro().values()])   - self.gyroBias
-        self.magnetic     = np.array([float(x) for x in IMU.readMagnet().values()]) - self.magBias
-
-        # for i in range(3):
-        #     if self.acceleration[i] > self.accelNull[i][0] and self.acceleration[i] < self.accelNull[i][1]:
-        #         self.acceleration[i] = 0
-
-        # if kinematics: self.kinematics()
-
-        self.updateRotation()
+    def update(self, verbose = False):
+        self.magnetic = np.array([float(x) for x in IMU.readMagnet().values()]) - self.magBias
 
         if verbose:
-            if selection == 1:
-                print("Acceleration: ", self.acceleration)
-            elif selection == 2:
-                print("Gyro: ", self.gyro)
-            elif selection == 3:
-                print("Magnetic: ", self.magnetic)
+            print("Magnetic: ", self.magnetic)
 
     
     @property
     def magneticMagnitude(self) -> float:
         return np.sqrt((self.magnetic**2).sum())
     
-    @property
-    def velocityCm(self) -> np.ndarray: # returns the velocity in cm
-        return self.velocity * 100
-    
-    @property
-    def positionCm(self) -> np.ndarray: # returns the position in cm
-        return self.position * 100
-
-    def onBeacon(self) -> bool:
-        return self.magneticMagnitude > self.magThreshold
-
-    def kinematics(self):
-        acceleration   = self.acceleration * g
-        self.velocity += acceleration * period
-        self.position += self.velocity * period
-
-    def updateRotation(self):
-        self.rotation += self.gyro[2] * period * magicGyroConstant
-        self.heading = copysign(abs(self.rotation) % 360, self.rotation) 
-        if self.heading < 0: self.heading += 360
         
-
-
 
 # -------------------- Motor setup --------------------
 
@@ -274,49 +197,6 @@ class DriveTrain():
     def update(self):
         self.left.update()
         self.right.update()
-
-# -------------------- Position Tracker --------------------
-class PositionTracker():
-
-    gyro = None
-    heading = 0
-
-    def __init__(self, left, right) -> None:
-        self.encoders = [left, right]
-        self.lastEncoder = [0, 0]
-        
-        self.position = np.array([0.0, 0.0], dtype="float64") # x, y (cm)
-
-    def __str__(self) -> str:
-        return f"X: {self.position[0]:6.2f}, Y: {self.position[1]:6.2f}"
-    
-    @classmethod
-    def updateHeading(cls):
-        cls.heading = copysign(abs(cls.gyro.value) % 360, cls.gyro.value)
-        if cls.heading < 0: cls.heading += 360
-
-
-    def update(self):
-        self.updateHeading()
-        avgReading = (self.encoders[0].value - self.lastEncoder[0] + self.encoders[1].value - self.lastEncoder[1]) / 2
-        self.position[0] += avgReading / (360) * rotationDist * sin(radians(self.heading))
-        self.position[1] += avgReading / (360) * rotationDist * cos(radians(self.heading))
-
-        self.setLast()
-
-    def setLast(self, update = False):
-        if update:
-            for encoder in self.encoders: encoder.update()
-        self.lastEncoder[0] = self.encoders[0].value
-        self.lastEncoder[1] = self.encoders[1].value
-
-    @property
-    def x(self) -> float:
-        return self.position[0]
-    
-    @property
-    def y(self) -> float:
-        return self.position[1]
 
 # -------------------- PID --------------------
 
@@ -394,10 +274,14 @@ class PIDController():
 
 
 
+# -------------------- Navigation and Mapping --------------------
+
+
 class NavigationOption(Enum):
-    Drive = 0
-    Turn = 1
-    check = 2
+    drive = 0    # drive forward
+    turnClock90 = 1   # turn 90 degrees Clockwise
+    turnCounterClock90 = 2   # turn left 90 degrees CounterClockwise
+    turn180 = 3  # turn 180 degrees
 
 class Direction(Enum):
     up = 0
@@ -405,61 +289,388 @@ class Direction(Enum):
     down = 2
     left = 3
 
-class Instruction():
+    @classmethod
+    def flip(cls, direction):
+        return cls((direction.value + 2) % 4)
 
-    def __init__(self, option : NavigationOption, direction : Direction) -> None:
-        self.command = option
-        self.direction = direction
+class tileType(Enum):
+    unknown = 0
+    path = 1
+    origin = 5
+    heatHazard = 2
+    magnetHazard = 3
+    exit = 4
 
+class edgeType(Enum):
+    open = 0
+    wall = 1
+    unknown = 2
+
+# -------------------- Position Tracker --------------------
+class PositionTracker():
+
+    gyro = None
+    heading = 0
+
+    def __init__(self, left, right) -> None:
+        self.encoders : list(Sensor) = [left, right]
+        self.lastEncoder = [0, 0]
+        self.direction = None
+        
+        self.position = np.array([0.0, 0.0], dtype="float64") # x, y (cm)
+
+    def __str__(self) -> str:
+        return f"X: {self.position[0]:6.2f}, Y: {self.position[1]:6.2f}"
+    
+    @classmethod
+    def updateHeading(cls):
+        cls.gyro.update()
+        cls.heading = copysign(abs(cls.gyro.value) % 360, cls.gyro.value)
+        if cls.heading < 0: cls.heading += 360
+
+    @property
+    def rotation(self):
+        return self.gyro.value
+    
+    def updateEncoders(self):
+        for encoder in self.encoders: encoder.update()
+
+    def update(self):
+        self.updateHeading()
+        self.updateDirection()
+        self.updateEncoders()
+        avgReading = (self.encoders[0].value - self.lastEncoder[0] + self.encoders[1].value - self.lastEncoder[1]) / 2
+        self.position[0] += avgReading / (360) * rotationDist * sin(radians(self.heading))
+        self.position[1] += avgReading / (360) * rotationDist * cos(radians(self.heading))
+
+        self.setLast()
+
+    def setLast(self, update = False):
+        if update:
+            for encoder in self.encoders: encoder.update()
+        self.lastEncoder[0] = self.encoders[0].value
+        self.lastEncoder[1] = self.encoders[1].value
+
+    def updateDirection(self):
+        self.direction = Direction(((self.heading + 45) // 90 ) % 4)
+
+    @property
+    def x(self) -> float:
+        return self.position[0]
+    
+    @x.setter
+    def x(self, value):
+        self.position[0] = value
+    
+    @property
+    def y(self) -> float:
+        return self.position[1]
+    
+    @y.setter
+    def y(self, value):
+        self.position[1] = value
 
 class Tile():
+    
+    def __init__(self, position) -> None:
+        self.position = np.array(position)
+        self.type = tileType.unknown
+        self.edges = [edgeType.unknown, edgeType.unknown, edgeType.unknown, edgeType.unknown]
+    
+    def __eq__(self, __value: object) -> bool:
+        return self.position[0] == __value.position[0] and self.position[1] == __value.position[1]
+
+    @property
+    def up(self):
+        return self.edges[0]
+    
+    @up.setter
+    def up(self, value : edgeType):
+        self.edges[0] = value
+
+    @property
+    def right(self):
+        return self.edges[1]
+    
+    @right.setter
+    def right(self, value : edgeType):
+        self.edges[1] = value
+
+    @property
+    def down(self):
+        return self.edges[2]
+    
+    @down.setter
+    def down(self, value : edgeType):
+        self.edges[2] = value
+
+    @property
+    def left(self):
+        return self.edges[3]
+    
+    @left.setter
+    def left(self, value : edgeType):
+        self.edges[3] = value
+
+    def setEdge(self, direction : Direction, value : edgeType):
+        self.edges[direction.value] = value
+        return self
+
+class outException(Exception):
     pass
+
+class Map():
+    # all position vectors are in the form (y, x)
+
+    directionalAdditors = { Direction.up : np.array((1, 0)), 
+                            Direction.right : np.array((0, 1)), 
+                            Direction.down : np.array((-1, 0)), 
+                            Direction.left : np.array((0, -1))}
+
+
+    def __init__(self, shape) -> None:
+        self.tiles = np.ndarray(shape, dtype = Tile)
+        self.currentTile = None
+        self.navigator : Navigator = None
+        self.scale = None
+        self.exit = None
+        self.exitDirection = None
+        self.out = False
+
+    def setup(self, startingPos, scale):
+        self.scale = scale
+
+        for y in range(self.tiles.shape[0]):
+            for x in range(self.tiles.shape[1]):
+                self.tiles[y][x] = Tile((y, x))
+
+        self.currentTile = self.tiles[tuple(startingPos[::-1])]
+        self.currentTile.type = tileType.origin
+
+    def setTileType(self, position : tuple, type : tileType):
+        self.tiles[position].type = type
+
+    def setTileEdge(self, position : tuple, direction : Direction, type : edgeType):
+        self.tiles[position].setEdge(direction, type)
+    
+    def getGridPosition(self, position):
+        return (round(position[1] / self.scale), round(position[0] / self.scale))
+    
+    def updateCurrentTile(self):
+        try:
+            self.currentTile = self.tiles[self.getGridPosition(self.navigator.position)[::-1]]
+        except IndexError:
+            self.currentTile = None
+            raise outException
+    
+    def update(self):
+        try:
+            self.updateCurrentTile()
+            self.currentTile.Type = tileType.path
+            self.updateEdges()
+        except outException:
+            self.out = True
+
+
+    def updateEdges(self):
+        for direction in Direction:
+            print(direction.name, self.navigator.distances[direction])
+            # set edge of current tile
+            if self.navigator.distances[direction] == None: continue
+
+            tileShift = 1
+            tilePosition = self.currentTile.position[:]
+            foundExit = False
+            
+            while (tileShift) * self.scale < self.navigator.distances[direction]:
+                print(tuple(tilePosition))
+                self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.open)
+                tilePosition += self.directionalAdditors[direction]
+                try:
+                    self.tiles[tuple(tilePosition)].setEdge(Direction.flip(direction), edgeType.open)
+                except IndexError:
+                    if self.tiles[tuple(tilePosition - self.directionalAdditors[direction])].type != tileType.origin:
+                        self.exitTile = self.tiles[tuple(tilePosition - self.directionalAdditors[direction])].type = tileType.exit
+                        self.exitDirection = direction
+                        foundExit = True
+                tileShift += 1
+            
+            if not foundExit:
+                self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.wall)
+    
+
+    def checkExplored(self, originalTile, originalDirection):
+        totalTiles = [originalTile]
+        stepTiles = [1]
+        nextStepTiles = [self.tiles[tuple(originalTile.position + self.directionalAdditors[originalDirection])]]
+        totalTiles.append(stepTiles[0])
+
+        while len(stepTiles) > 0:
+            stepTiles = nextStepTiles[:]
+            nextStepTiles = []
+            for tile in stepTiles:
+                for checkDirection in Direction:
+                    if tile.edges[checkDirection.value] == edgeType.open:
+                        newTile = self.tiles[tuple(tile.position + self.directionalAdditors[checkDirection])]
+                        if newTile not in totalTiles:
+                            nextStepTiles.append(newTile)
+                            totalTiles.append(newTile)
+        
+        totalTiles.remove(originalTile)
+        numUnknowTiles = len([tile for tile in totalTiles if tile.type == tileType.unknown])
+        unknownPercentage = numUnknowTiles / len(totalTiles)
+
+        return (numUnknowTiles, unknownPercentage)
+
+    def getAdjacentTiles(self, tile : Tile):
+        adjacentTiles = {}
+        for direction in Direction:
+            if tile.edges[direction.value] == edgeType.open:
+                adjacentTiles[direction] = self.tiles[tuple(tile.position + self.directionalAdditors[direction])]
+        return adjacentTiles
+    
+
+    def makeMap(self):
+        file = open("Map.txt", "w")
+
+        with file:
+            file.write("Team: 87\n")
+            file.write("Map: 0")
+            file.write(f"Scale: {self.scale}")
+            for row in self.tiles[::-1]:
+                for tile in row:
+                    tile : Tile
+                    file.write(f"{tile.type.value} \t")
+                tile.write("\n")
 
 
 
 class Navigator():
 
+    tilesRemembered = 5
+    
+    tilePreference = {tileType.unknown : 3,
+                      tileType.path : 2,
+                      tileType.heatHazard : 0,
+                      tileType.magnetHazard : 0,
+                      tileType.exit : 5,
+                      tileType.origin : 1}
+
     def __init__(self, initialDirection, positionTracker, distanceSensors, IR, magnetic, map) -> None:
         self.direction : Direction = initialDirection
-        self.positionTracker = positionTracker
+        self.positionTracker : PositionTracker = positionTracker
         self.distanceSensors : dict[Direction , Sensor] = distanceSensors
         self.distances : dict[Direction , float] = {Direction.up : None, Direction.right : None, 
                                                     Direction.down : None, Direction.left : None}
-        self.IRSensor = IR
-        self.magneticSensor = magnetic
-        self.map = map
+        
+        self.IRSensor : Sensor = IR
+        self.foundIR = False
 
+        self.magneticSensor : IMUWrap = magnetic
+        self.magDirection = None
 
+        self.map : Map = map
+        map.navigator = self
+
+        self.lastTiles = [Tile((-1,-1)) for i in range(self.tilesRemembered)]
     
     def update(self):
+        self.lastTiles = self.lastTiles[1:] + [self.map.currentTile]
         self.updatePosition()
         self.updateDirection()
         self.updateDistances()
         self.updateOtherSensors()
+        self.updateMagDirection()
+        self.updateIRReading()
         self.flushMap()
-
+        return self.getInstruction()
 
     def updatePosition(self):
         self.positionTracker.update()
-
     
     def updateDirection(self):
-        self.direction = Direction(self.positionTracker.heading // 90)
-
+        self.direction = Direction(((self.positionTracker.heading + 45) // 90 ) % 4)
 
     def updateDistances(self):
         for sensorDirection, sensor in self.distanceSensors.items():
             sensor.update()
             finalDir = (sensorDirection.value + self.direction.value) % 4
             self.distances[Direction(finalDir)] = sensor.value
-        self.distances[Direction((self.direction.value + 2) % 4)] = None
+        self.distances[Direction.flip(self.direction)] = None
     
     def updateOtherSensors(self):
         self.IRSensor.update()
         self.magneticSensor.update()
 
+    def updateMagDirection(self):
+        x, y = self.magneticSensor.magnetic[0:2]
+        if abs(x) > abs(y) and x > 0:
+            greaterDirection = Direction.right
+        elif abs(x) > abs(y) and x < 0:
+            greaterDirection = Direction.left
+        elif abs(y) > abs(x) and y > 0:
+            greaterDirection = Direction.up
+        elif abs(y) > abs(x) and y < 0:
+            greaterDirection = Direction.down
+        else:
+            greaterDirection = Direction.up
 
+        self.magDirection = Direction((greaterDirection.value + self.direction.value) % 4)
+
+    def updateIRReading(self):
+        self.foundIR = self.IRSensor.value > 0.0
+
+    def flushMap(self):
+        self.map.update()
+
+    def getInstruction(self) -> NavigationOption:
+        try:
+            if self.map.exitDirection is not None: raise Exception("Exit Found")
+            explorationValues = {}
+            for direction in Direction:
+                if self.map.currentTile.edges[direction.value] == edgeType.open:
+                    explorationValues[direction] = self.map.checkExplored(self.map.currentTile, direction)
+
+            adjacentTiles = self.map.getAdjacentTiles(self.map.currentTile)
+            preferences = {}
+
+            for tile in adjacentTiles.values():
+                preference = self.tilePreference[tile.type]
+                if tile in self.lastTiles: preference -= 1
+                preferences[tile] = self.tilePreference[tile.type]
+
+            finalDirection = adjacentTiles.keys()[0]
+            for direction, tile in adjacentTiles.items():
+                if preferences[tile] > preferences[adjacentTiles[finalDirection]]:
+                    finalDirection = direction
+                elif preferences[tile] == preferences[adjacentTiles[finalDirection]]:
+                    if explorationValues[direction][0] > explorationValues[finalDirection][0]:
+                        finalDirection = direction
+                    elif explorationValues[direction][0] == explorationValues[finalDirection][0]:
+                        if explorationValues[direction][1] > explorationValues[finalDirection][1]:
+                            finalDirection = direction
+                        elif explorationValues[direction][1] == explorationValues[finalDirection][1]:
+                            if direction != self.direction:
+                                finalDirection = direction
+        except Exception as e:
+            print(str(e))
+            finalDirection = self.map.exitDirection
+        
+
+        if finalDirection == self.direction:
+            return NavigationOption.drive
+        elif finalDirection == Direction.flip(self.direction):
+            return NavigationOption.turn180
+        elif finalDirection == Direction((self.direction.value + 1) % 4):
+            return NavigationOption.turnClock90
+        elif finalDirection == Direction((self.direction.value + 3) % 4):
+            return NavigationOption.turnCounterClock90
     
+    @property
+    def position(self):
+        return self.positionTracker.position
+    
+
 
 
 
