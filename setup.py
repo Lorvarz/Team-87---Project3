@@ -12,15 +12,16 @@ Front = Sensor(sensorType.brick, sensorType.ultraSonicNXT, 1)
 IR = Sensor(sensorType.grove, sensorType.analog, 2)
 IR2 = Sensor(sensorType.grove, sensorType.analog, 1)
 
-LegoGyro = Sensor(sensorType.brick, sensorType.gyro, 4)
+LegoGyro = Sensor(sensorType.brick, sensorType.gyro, 2)
 
 PIDGyro     = PIDController(1.3, 0.005, 0.04, LegoGyro, 0, 2)
-PIDGyro.maxOutput -= 15
+PIDGyro.maxOutput -= 10
 
 leftMotor  = Sensor(sensorType.brick, sensorType.motor, "B")
 rightMotor = Sensor(sensorType.brick, sensorType.motor, "C")
 
 cargoMotor = Motor("A")
+BP.set_motor_limits(cargoMotor.pin, power=20)
 
 Position = PositionTracker(leftMotor, rightMotor)
 PositionTracker.gyro = LegoGyro
@@ -76,8 +77,8 @@ if (input("Create map? (y/n): ") == "y"):
 
     areaMap = Map((sideLength, sideLength))
     areaMap.setup(origin, scale)
-    Position.x = origin[0] * scale
-    Position.y = origin[1] * scale
+    Position.y = origin[0] * scale
+    Position.x = origin[1] * scale
 
     print("Map created")
 
@@ -125,8 +126,9 @@ def driveStraight(base):
     Sensor.updateAll()
     PIDGyro.update()
 
-    drive.reduceRight(PIDGyro.output)
-    drive.reduceLeft(-PIDGyro.output)
+    if not avoidWalls():
+        drive.reduceRight(PIDGyro.output)
+        drive.reduceLeft(-PIDGyro.output)
 
     drive.update()
     
@@ -142,55 +144,28 @@ def turnRelative(distance):
     drive.stop()
 
 
-def checkWallDistance():
+def avoidWalls() -> bool:
     if (Left.update() < wallDistance):
         drive.reduceLeft(-reduce)
+        return True
     elif(Right.update() < wallDistance):
         drive.reduceRight(-reduce)
+        return True
+    return False
+
 
 def driveToWall():
     Sensor.updateAll()
-    while (Front.value > wallDistance * 1.3):
-        driveForward(40)
+    target = wallDistance * 1.2
+    while (abs(Front.value - target)) > 3:
+        driveForward((Front.value - target) * 4)
         sleep(period)
         Sensor.updateAll()
-
-    drive.stop()
-
-
-def runHallway():
-    Sensor.updateAll()
-    
-    startRotation = LegoGyro.value
-    PIDGyro.setTarget(startRotation)
-
-    while not (Left.value < 40 and Right.value < 40):
-        driveStraight(basePower)
-
-        sleep(period)
-
-    Sensor.updateAll()
-
-    while (Left.value < 40 and Right.value < 40):
-        driveStraight(basePower)
-
-        checkWallDistance()
-
-        sleep(period)
-
-    turnToHeading(startRotation)
-    
-    driveToWall()
-
-    if Left.value > 40:
-        turnRelative(-90)
-    else:
-        turnRelative(100)
 
 
 def driveDistance(distance):
     select = 1 if Position.direction.value % 2 == 0 else 0
-    start = Position.position[select]
+    start = Position.position[select]   
 
     PIDGyro.setTarget(Position.rotation)
 
@@ -199,13 +174,21 @@ def driveDistance(distance):
         sleep(period)
         Position.update()
 
+    areaMap.updateCurrentTile()
+    if areaMap.currentTile[Position.direction] == edgeType.wall:
+        driveToWall()
+
     drive.stop()
+        
+
+
+
 
 def dropCargo():
-    cargoMotor.goToPosition(-110)
+    cargoMotor.goToPosition(-80)
 
 def closeCargo():
-    cargoMotor.goToPosition(10)
+    cargoMotor.goToPosition(0)
     
     
 

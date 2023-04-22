@@ -9,7 +9,7 @@ from IMUFilters import *
 import numpy as np
 
 BP = brickpi3.BrickPi3()
-# IMU = MPU9250()
+IMU = MPU9250()
 
 BPPort = {1:BP.PORT_1, 2:BP.PORT_2, 3:BP.PORT_3, 4:BP.PORT_4, 
                 "A":BP.PORT_A,"B":BP.PORT_B, "C":BP.PORT_C, "D":BP.PORT_D}
@@ -23,7 +23,7 @@ period = 0.02 # seconds
 g = 9.81 # m/s^2
 wheelRadius = 1.42875 # cm
 ratio = 0.5
-rotationDist = 2 * pi * wheelRadius * ratio + 0.83 # cm
+rotationDist = 2 * pi * wheelRadius * ratio + 0.33 # cm
 
 robotWidth = 22 # cm
 wallDistance = (40 - 22) / 2  # cm
@@ -82,6 +82,9 @@ class Sensor():
         elif (self.type == sensorType.IMU):
             if (self.mode == sensorType.IMUmag): self.value = self.Inertial.magnetic
 
+        #adjsut for sensor inaccuracy
+        if self.mode == sensorType.ultraSonicNXT: 
+                if self.value == 255: self.value = 123
 
         if self.biased: self.value = (self.value + self.bias) * self.multiplier
         return self.value
@@ -156,7 +159,7 @@ class Motor():
         BP.set_motor_power(self.pin, 0)
 
     def getPosition(self):
-        BP.get_motor_encoder(BPPort[self.pin])
+        BP.get_motor_encoder(self.pin)
 
 
 class DriveTrain():                                                                 
@@ -264,7 +267,7 @@ class PIDController():
         goodFrames = 0
         while goodFrames <= 2:
             Sensor.updateAll()
-            self.update(verbose = True)
+            self.update(verbose = False)
             motorFunc(self.output)
             time.sleep(period)
             goodFrames = goodFrames + 1 if abs(self.error) < self.margin else 0
@@ -305,6 +308,9 @@ class edgeType(Enum):
     open = 0
     wall = 1
     unknown = 2
+
+    def __repr__(self) -> str:
+        return self.name
 
 # -------------------- Position Tracker --------------------
 class PositionTracker():
@@ -379,6 +385,14 @@ class Tile():
     
     def __eq__(self, __value: object) -> bool:
         return self.position[0] == __value.position[0] and self.position[1] == __value.position[1]
+    
+    def __hash__(self) -> int:
+        return hash(tuple(self.position))
+    
+    def __getitem__(self, index):
+        if index.__class__ == Direction:
+            return self.edges[index.value]
+        return self.edges[index]
 
     @property
     def up(self):
@@ -444,7 +458,7 @@ class Map():
             for x in range(self.tiles.shape[1]):
                 self.tiles[y][x] = Tile((y, x))
 
-        self.currentTile = self.tiles[tuple(startingPos[::-1])]
+        self.currentTile = self.tiles[tuple(startingPos)]
         self.currentTile.type = tileType.origin
 
     def setTileType(self, position : tuple, type : tileType):
@@ -454,11 +468,13 @@ class Map():
         self.tiles[position].setEdge(direction, type)
     
     def getGridPosition(self, position):
-        return (round(position[1] / self.scale), round(position[0] / self.scale))
+        return (round(position[1] / (self.scale-0.5)), round(position[0] / (self.scale-0.5)))
+        
     
     def updateCurrentTile(self):
         try:
-            self.currentTile = self.tiles[self.getGridPosition(self.navigator.position)[::-1]]
+            self.currentTile = self.tiles[self.getGridPosition(self.navigator.position)]
+            print("--- POSITION:", self.currentTile.position)
         except IndexError:
             self.currentTile = None
             raise outException
@@ -466,7 +482,7 @@ class Map():
     def update(self):
         try:
             self.updateCurrentTile()
-            self.currentTile.Type = tileType.path
+            if self.currentTile.type ==tileType.unknown: self.currentTile.type = tileType.path
             self.updateEdges()
         except outException:
             self.out = True
@@ -479,46 +495,53 @@ class Map():
             if self.navigator.distances[direction] == None: continue
 
             tileShift = 1
-            tilePosition = self.currentTile.position[:]
-            foundExit = False
+            tilePosition = self.currentTile.position.copy()
+            edgeFound = False
             
             while (tileShift) * self.scale < self.navigator.distances[direction]:
-                print(tuple(tilePosition))
                 self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.open)
                 tilePosition += self.directionalAdditors[direction]
                 try:
                     self.tiles[tuple(tilePosition)].setEdge(Direction.flip(direction), edgeType.open)
                 except IndexError:
                     if self.tiles[tuple(tilePosition - self.directionalAdditors[direction])].type != tileType.origin:
-                        self.exitTile = self.tiles[tuple(tilePosition - self.directionalAdditors[direction])].type = tileType.exit
+                        self.exitTile = self.tiles[tuple(tilePosition - self.directionalAdditors[direction])]
+                        self.exitTile.type = tileType.exit
                         self.exitDirection = direction
-                        foundExit = True
+                        print("FOUND EXIT AT", self.exitTile.position)
+                    edgeFound = True
+                    break
                 tileShift += 1
+                if tilePosition[0] < 0 or tilePosition[1] < 0: break
             
-            if not foundExit:
+            if not edgeFound:
                 self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.wall)
     
 
     def checkExplored(self, originalTile, originalDirection):
         totalTiles = [originalTile]
-        stepTiles = [1]
+        stepTiles = [originalTile]
         nextStepTiles = [self.tiles[tuple(originalTile.position + self.directionalAdditors[originalDirection])]]
-        totalTiles.append(stepTiles[0])
+        totalTiles.append(nextStepTiles[0])
 
         while len(stepTiles) > 0:
-            stepTiles = nextStepTiles[:]
+            stepTiles = [x for x in nextStepTiles]
             nextStepTiles = []
             for tile in stepTiles:
                 for checkDirection in Direction:
                     if tile.edges[checkDirection.value] == edgeType.open:
-                        newTile = self.tiles[tuple(tile.position + self.directionalAdditors[checkDirection])]
-                        if newTile not in totalTiles:
-                            nextStepTiles.append(newTile)
-                            totalTiles.append(newTile)
+                        try:
+                            newTile = self.tiles[tuple(tile.position + self.directionalAdditors[checkDirection])]
+                            if newTile not in totalTiles:
+                                totalTiles.append(newTile)
+                                nextStepTiles.append(newTile)
+                            
+                        except IndexError:
+                            pass
         
         totalTiles.remove(originalTile)
         numUnknowTiles = len([tile for tile in totalTiles if tile.type == tileType.unknown])
-        unknownPercentage = numUnknowTiles / len(totalTiles)
+        unknownPercentage = 0 if len(totalTiles) == 0 else numUnknowTiles / len(totalTiles)
 
         return (numUnknowTiles, unknownPercentage)
 
@@ -531,17 +554,9 @@ class Map():
     
 
     def makeMap(self):
-        file = open("Map.txt", "w")
+        tileTypes = np.array([[tile.type.value for tile in row] for row in self.tiles], dtype="int16")
 
-        with file:
-            file.write("Team: 87\n")
-            file.write("Map: 0")
-            file.write(f"Scale: {self.scale}")
-            for row in self.tiles[::-1]:
-                for tile in row:
-                    tile : Tile
-                    file.write(f"{tile.type.value} \t")
-                tile.write("\n")
+        np.savetxt("map.txt", tileTypes)
 
 
 
@@ -637,9 +652,9 @@ class Navigator():
             for tile in adjacentTiles.values():
                 preference = self.tilePreference[tile.type]
                 if tile in self.lastTiles: preference -= 1
-                preferences[tile] = self.tilePreference[tile.type]
+                preferences[tile] = preference
 
-            finalDirection = adjacentTiles.keys()[0]
+            finalDirection = adjacentTiles.keys().__iter__().__next__()
             for direction, tile in adjacentTiles.items():
                 if preferences[tile] > preferences[adjacentTiles[finalDirection]]:
                     finalDirection = direction
@@ -653,9 +668,10 @@ class Navigator():
                             if direction != self.direction:
                                 finalDirection = direction
         except Exception as e:
-            print(str(e))
+            # print("Exception:", )
             finalDirection = self.map.exitDirection
         
+
 
         if finalDirection == self.direction:
             return NavigationOption.drive
@@ -665,6 +681,9 @@ class Navigator():
             return NavigationOption.turnClock90
         elif finalDirection == Direction((self.direction.value + 3) % 4):
             return NavigationOption.turnCounterClock90
+
+        print("Didnt find instruction")
+        print("fina dir:", finalDirection)
     
     @property
     def position(self):

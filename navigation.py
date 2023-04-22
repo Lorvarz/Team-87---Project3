@@ -1,7 +1,9 @@
 from setup import *
 
 while not areaMap.out:
+    print(Position.y, " ", Position.x)
     instruction = centralNav.update()
+    print(instruction.name)
 
     if instruction == NavigationOption.drive:
         driveDistance(areaMap.scale)
@@ -14,6 +16,8 @@ while not areaMap.out:
     elif instruction == NavigationOption.turn180:
         turnRelative(180)
         Position.setLast(True)
+    
+    sleep(period * 2)
 
 
 # TODO: Drop cargo and dance
