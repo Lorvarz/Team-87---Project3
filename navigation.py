@@ -8,13 +8,16 @@ while not areaMap.out:
     if instruction == NavigationOption.drive:
         driveDistance(areaMap.scale)
     elif instruction == NavigationOption.turnClock90:
-        turnRelative(90)
+        angleTarget = (Position.rotation + 45) // 90 * 90 + 90
+        turnRelative(angleTarget - Position.rotation)
         Position.setLast(True)
     elif instruction == NavigationOption.turnCounterClock90:
-        turnRelative(-90)
+        angleTarget = (Position.rotation + 45) // 90 * 90 - 90
+        turnRelative(angleTarget - Position.rotation)
         Position.setLast(True)
     elif instruction == NavigationOption.turn180:
-        turnRelative(180)
+        angleTarget = (Position.rotation + 45) // 90 * 90 + 180
+        turnRelative(angleTarget - Position.rotation)
         Position.setLast(True)
     
     sleep(period * 2)

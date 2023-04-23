@@ -1,0 +1,170 @@
+------  GO! ------
+
+0.0   40.0
+--- POSITION: [0 1]
+up 123
+right 9
+down None
+left 5
+drive
+Start Rotation:  0
+--- POSITION: [1 1]
+40.198332088376574   41.351949706949426
+--- POSITION: [1 1]
+up 123
+right 6
+down None
+left 7
+drive
+Start Rotation:  9
+--- POSITION: [2 1]
+80.59633584646338   46.576727603579535
+--- POSITION: [2 1]
+up 91
+right 39
+down None
+left 53
+drive
+Start Rotation:  8
+--- POSITION: [3 1]
+121.2714254649101   46.0591885171503
+--- POSITION: [3 1]
+up 52
+right 4
+down None
+left 10
+drive
+Start Rotation:  -7
+--- POSITION: [4 1]
+161.86025775278438   41.85526989030566
+--- POSITION: [4 1]
+up 15
+right 10
+down None
+left 47
+turnCounterClock90
+160.28685412279015   41.99292487108069
+--- POSITION: [4 1]
+up 7
+right None
+down 147
+left 52
+drive
+Start Rotation:  -95
+--- POSITION: [4 0]
+157.11107908591237   1.968632106163303
+--- POSITION: [4 0]
+up 11
+right None
+down 0
+left 15
+turn180
+157.16774259983828   1.4295147834151871
+--- POSITION: [4 0]
+up 1
+right 51
+down 7
+left None
+drive
+Start Rotation:  96
+--- POSITION: [4 1]
+151.1557245356915   41.82253916583832
+--- POSITION: [4 1]
+up 6
+right 17
+down 42
+left None
+turnClock90
+151.01552854749644   42.31146068003831
+--- POSITION: [4 1]
+up None
+right 6
+down 48
+left 51
+drive
+Start Rotation:  196
+--- POSITION: [3 1]
+110.61986896823711   36.78401207474574
+
+
+=========================================================================================
+
+------  GO! ------
+
+40.0   0.0
+--- POSITION: [1 0]
+up 51
+right 6
+down None
+left 6
+drive
+Start Rotation:  0
+--- POSITION: [2 0]
+80.29789891301222   0.9707124192334163
+--- POSITION: [2 0]
+up 15
+right 47
+down None
+left 8
+turnClock90
+79.3700767766001   0.840315521726702
+--- POSITION: [2 0]
+up 6
+right 99
+down 50
+left None
+drive
+Start Rotation:  98
+--- POSITION: [2 1]
+74.05193109230427   40.85534791820908
+--- POSITION: [2 1]
+up 503
+FOUND EXIT AT [5 1]
+right 48
+down 80
+left None
+Exception: Exit Found
+turnCounterClock90
+74.01214786998109   41.106529298410685
+--- POSITION: [2 1]
+up 123
+right 42
+down None
+left 49
+Exception: Exit Found
+drive
+Start Rotation:  9
+--- POSITION: [3 1]
+114.22120287290302   43.775134928234685
+--- POSITION: [3 1]
+up 123
+FOUND EXIT AT [5 1]
+right 3
+down None
+left 11
+Exception: Exit Found
+drive
+Start Rotation:  -2
+--- POSITION: [4 1]
+154.88278940794893   39.08215894670599
+--- POSITION: [4 1]
+up 123
+FOUND EXIT AT [5 1]
+right 5
+down None
+left 8
+Exception: Exit Found
+drive
+Start Rotation:  -15
+--- POSITION: [5 1]
+195.3741146063365   28.464461036013997
+--- POSITION: [5 1]
+up 123
+FOUND EXIT AT [5 1]
+right 11
+down None
+left 1
+Exception: Exit Found
+drive
+Start Rotation:  -9
+

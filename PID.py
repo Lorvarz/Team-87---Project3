@@ -15,10 +15,10 @@ BPPort = {1:BP.PORT_1, 2:BP.PORT_2, 3:BP.PORT_3, 4:BP.PORT_4,
                 "A":BP.PORT_A,"B":BP.PORT_B, "C":BP.PORT_C, "D":BP.PORT_D}
 
 basePower = 60
-reduce = basePower * 0.15
+reduce = basePower * 0.18
 maxDistance = 200
 maxPower = 90
-minPower = 25
+minPower = 35
 period = 0.02 # seconds
 g = 9.81 # m/s^2
 wheelRadius = 1.42875 # cm
@@ -26,7 +26,7 @@ ratio = 0.5
 rotationDist = 2 * pi * wheelRadius * ratio + 0.33 # cm
 
 robotWidth = 22 # cm
-wallDistance = (40 - 22) / 2  # cm
+wallDistance = 9  # cm
 
 # table: 2.6  my table: 3.0
 magicGyroConstant = 3.1
@@ -114,6 +114,9 @@ class IMUWrap():
         self.magnetic     : np.ndarray = None
 
         self.magThreshold = 0
+    
+    def setThreshold(self, threshold):
+        self.magThreshold = threshold
 
     def setBias(self):
         biases = AvgCali(IMU, 100, 0.04)
@@ -129,6 +132,10 @@ class IMUWrap():
     @property
     def magneticMagnitude(self) -> float:
         return np.sqrt((self.magnetic**2).sum())
+
+    def magnetNear(self, threshold = None) -> bool:
+        if threshold == None: threshold = self.magThreshold
+        return self.magneticMagnitude >= threshold
     
         
 
@@ -182,6 +189,11 @@ class DriveTrain():
         # self.right.power -= copysign(reduce, self.right.power)
         self.right.power -= reduce
 
+    def adjustPowers(self, adjustment):
+        """Positive adjustment increases right"""
+        self.left.power += adjustment
+        self.right.power -= adjustment
+
     def setLeft(self, power):
         self.left.setPower(power)
 
@@ -206,7 +218,7 @@ class DriveTrain():
 class PIDController():
 
 
-    def __init__(self, Kp, Ki, Kd, sensor, target = 0, margin = 1, derivativeMax = 30, axis = None) -> None:
+    def __init__(self, Kp, Ki, Kd, sensor, target = 0, margin = 1, derivativeMax = 30) -> None:
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
@@ -226,16 +238,15 @@ class PIDController():
         self.derivativeOut = 0
         self.output        = 0
 
-        self.axis = axis
         self.maxOutput = maxPower - 18
 
     # --------------- update section ---------------
-    def update(self, verbose = False):
+    def update(self, verbose = False, value = None):
         self.lastError = self.error
-        if self.axis != None:
-            self.error = self.target - self.sensor.value[self.axis]
-        else:
+        if value is not None:
             self.error = self.target - self.sensor.value
+        else:
+            self.error = self.target - value
 
 
         self.totalError += self.error * period * (abs(self.integralOut) <= maxPower)
@@ -472,8 +483,10 @@ class Map():
         
     
     def updateCurrentTile(self):
+        position = self.getGridPosition(self.navigator.position)
         try:
-            self.currentTile = self.tiles[self.getGridPosition(self.navigator.position)]
+            if position[0] < 0 or position[1] < 0: raise IndexError
+            self.currentTile = self.tiles[position]
             print("--- POSITION:", self.currentTile.position)
         except IndexError:
             self.currentTile = None
@@ -482,7 +495,7 @@ class Map():
     def update(self):
         try:
             self.updateCurrentTile()
-            if self.currentTile.type ==tileType.unknown: self.currentTile.type = tileType.path
+            if self.currentTile.type == tileType.unknown: self.currentTile.type = tileType.path
             self.updateEdges()
         except outException:
             self.out = True
@@ -493,6 +506,7 @@ class Map():
             print(direction.name, self.navigator.distances[direction])
             # set edge of current tile
             if self.navigator.distances[direction] == None: continue
+            elif self.navigator.distances[direction] < self.scale: continue
 
             tileShift = 1
             tilePosition = self.currentTile.position.copy()
@@ -502,6 +516,7 @@ class Map():
                 self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.open)
                 tilePosition += self.directionalAdditors[direction]
                 try:
+                    if tilePosition[0] < 0 or tilePosition[1] < 0: raise IndexError
                     self.tiles[tuple(tilePosition)].setEdge(Direction.flip(direction), edgeType.open)
                 except IndexError:
                     if self.tiles[tuple(tilePosition - self.directionalAdditors[direction])].type != tileType.origin:
@@ -512,7 +527,7 @@ class Map():
                     edgeFound = True
                     break
                 tileShift += 1
-                if tilePosition[0] < 0 or tilePosition[1] < 0: break
+                
             
             if not edgeFound:
                 self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.wall)
@@ -551,6 +566,16 @@ class Map():
             if tile.edges[direction.value] == edgeType.open:
                 adjacentTiles[direction] = self.tiles[tuple(tile.position + self.directionalAdditors[direction])]
         return adjacentTiles
+    
+    def addHeatHazard(self, direction : Direction):
+        self.tiles[tuple(self.currentTile.position + self.directionalAdditors[direction])].type = tileType.heatHazard
+    
+    def addMagnetHazard(self, direction : Direction):
+        self.tiles[tuple(self.currentTile.position + self.directionalAdditors[direction])].type = tileType.magnetHazard
+
+    def printMapEdges(self):
+        for tile in self.tiles.flat:
+            print(tile.position, tile.edges)
     
 
     def makeMap(self):
@@ -632,8 +657,13 @@ class Navigator():
 
         self.magDirection = Direction((greaterDirection.value + self.direction.value) % 4)
 
+        if self.magneticSensor.magnetNear():
+            self.map.addMagnetHazard(self.magDirection)
+
     def updateIRReading(self):
         self.foundIR = self.IRSensor.value > 0.0
+        if self.foundIR:
+            self.map.addHeatHazard(self.direction)
 
     def flushMap(self):
         self.map.update()
@@ -668,7 +698,7 @@ class Navigator():
                             if direction != self.direction:
                                 finalDirection = direction
         except Exception as e:
-            # print("Exception:", )
+            print("Exception:", e)
             finalDirection = self.map.exitDirection
         
 
@@ -683,7 +713,7 @@ class Navigator():
             return NavigationOption.turnCounterClock90
 
         print("Didnt find instruction")
-        print("fina dir:", finalDirection)
+        print("final dir:", finalDirection)
     
     @property
     def position(self):

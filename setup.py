@@ -14,8 +14,11 @@ IR2 = Sensor(sensorType.grove, sensorType.analog, 1)
 
 LegoGyro = Sensor(sensorType.brick, sensorType.gyro, 2)
 
-PIDGyro     = PIDController(1.3, 0.005, 0.04, LegoGyro, 0, 2)
+PIDGyro     = PIDController(1.45, 0.004, 0.04, LegoGyro, 0, 2)
 PIDGyro.maxOutput -= 10
+# PIDGyro.maxOutput = 60
+
+PIDStraight = PIDController(20, 0.1, 0.1, Left, 0, 2)
 
 leftMotor  = Sensor(sensorType.brick, sensorType.motor, "B")
 rightMotor = Sensor(sensorType.brick, sensorType.motor, "C")
@@ -43,6 +46,7 @@ def customHook(exctype, value, traceback):
     try:
         global areaMap
         areaMap.makeMap()
+        # areaMap.printMapEdges()
     except:
         pass
     sys.__excepthook__(exctype, value, traceback)
@@ -71,7 +75,7 @@ except brickpi3.SensorError:
 # --------------------- Map creation --------------------
 
 if (input("Create map? (y/n): ") == "y"):
-    scale = int(input("Enter the scale of the tiles: "))
+    scale = 40
     sideLength = int(input("Enter the number of tiles in a side: "))
     origin = [int(i) for i in input("Enter the origin position: ").split(",")]
 
@@ -99,12 +103,15 @@ if (input("Create map? (y/n): ") == "y"):
 # biasMulti = 0.2
 
 if (input("Calibrate Magnetic sensor? (y/n): ") == "y"):
-    Sensor.Inertial.setBias()
+    magneticSensor.setBias()
     print("Got Magnetic Bias")
+    input("Place robot next to beacon")
+    magneticSensor.update()
+    magneticSensor.magThreshold = magneticSensor.magneticMagnitude * 0.8
 
-if (input("Calibrate IR sensor? (y/n): ") == "y"):
+if (input("Calibrate IR sensor next to beacon? (y/n): ") == "y"):
     IR.calibrateBias()
-    IR2.calibrateBias()
+    IR.bias *= 0.8
     print("Calibrated IR sensor")
 
 print("Calibration over\n")
@@ -121,14 +128,18 @@ def driveForward(power):
     drive.setAllPowers(power)
     drive.update()
 
-def driveStraight(base):
+def driveStraight(base, orthoDistance):
     drive.setAllPowers(base)
     Sensor.updateAll()
     PIDGyro.update()
+    PIDStraight.update(value = orthoDistance)
 
-    if not avoidWalls():
-        drive.reduceRight(PIDGyro.output)
-        drive.reduceLeft(-PIDGyro.output)
+    adjustSign = 1 if Position.direction == Direction.up or Position.direction == Direction.right else -1
+    drive.adjustPowers(PIDStraight.output * adjustSign)
+    # drive.adjustPowers(-PIDGyro.output)
+
+    # drive.reduceRight(PIDGyro.output)
+    # drive.reduceLeft(-PIDGyro.output)
 
     drive.update()
     
@@ -145,10 +156,10 @@ def turnRelative(distance):
 
 
 def avoidWalls() -> bool:
-    if (Left.update() < wallDistance):
+    if (Left.value < wallDistance):
         drive.reduceLeft(-reduce)
         return True
-    elif(Right.update() < wallDistance):
+    elif(Right.value < wallDistance):
         drive.reduceRight(-reduce)
         return True
     return False
@@ -156,7 +167,7 @@ def avoidWalls() -> bool:
 
 def driveToWall():
     Sensor.updateAll()
-    target = wallDistance * 1.2
+    target = 18
     while (abs(Front.value - target)) > 3:
         driveForward((Front.value - target) * 4)
         sleep(period)
@@ -166,11 +177,16 @@ def driveToWall():
 def driveDistance(distance):
     select = 1 if Position.direction.value % 2 == 0 else 0
     start = Position.position[select]   
+    orthogonalStart = areaMap.currentTile.position[select] * areaMap.scale
 
-    PIDGyro.setTarget(Position.rotation)
+    print("Start Rotation: ", Position.rotation)
+    angleTarget = (Position.rotation + 45) // 90 * 90 
+
+    PIDGyro.setTarget(angleTarget)
 
     while (abs(Position.position[select] - start) < distance):
-        driveStraight(basePower + (distance - abs(Position.position[select] - start)))
+        driveStraight(basePower + (distance - abs(Position.position[select] - start)), 
+                      Position.position[not select] - orthogonalStart)
         sleep(period)
         Position.update()
 
