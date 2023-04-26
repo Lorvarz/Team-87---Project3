@@ -8,14 +8,16 @@ from MPU9250 import MPU9250
 from IMUFilters import *
 import numpy as np
 
+# initialization
 BP = brickpi3.BrickPi3()
 IMU = MPU9250()
 
 BPPort = {1:BP.PORT_1, 2:BP.PORT_2, 3:BP.PORT_3, 4:BP.PORT_4, 
                 "A":BP.PORT_A,"B":BP.PORT_B, "C":BP.PORT_C, "D":BP.PORT_D}
 
+# Constants
 basePower = 60
-reduce = basePower * 0.18
+reduce = basePower * 0.24
 maxDistance = 200
 maxPower = 90
 minPower = 35
@@ -70,6 +72,7 @@ class Sensor():
         elif (type == sensorType.brick and mode != sensorType.motor): BP.set_sensor_type(BPPort[pin], self.mode)
     
     def update(self) -> float:
+        """Updates the sensor value and returns it"""
         if(self.type == sensorType.grove): 
             if(self.mode == sensorType.analog):       self.value = grovepi.analogRead(self.pin)
             elif(self.mode == sensorType.digital):    self.value = grovepi.digitalRead(self.pin)
@@ -82,14 +85,17 @@ class Sensor():
         elif (self.type == sensorType.IMU):
             if (self.mode == sensorType.IMUmag): self.value = self.Inertial.magnetic
 
-        #adjsut for sensor inaccuracy
+        #adjsut for sensor max range
         if self.mode == sensorType.ultraSonicNXT: 
                 if self.value == 255: self.value = 123
+        elif self.mode == sensorType.ultraSonic:
+                if self.value >= 490: self.value = 135
 
         if self.biased: self.value = (self.value + self.bias) * self.multiplier
         return self.value
     
     def calibrateBias(self, samples = 100, delay = period, multi = 1.2):
+        """Calibrates the bias of the sensor by taking a number of samples and averaging them."""
         self.biased = True
         recordings = []
         for i in range(samples):
@@ -99,6 +105,7 @@ class Sensor():
     
     @classmethod
     def updateAll(cls):
+        """Updates all sensors"""
         cls.Inertial.update()
         for sensor in cls.allSensors:
             sensor.update()
@@ -108,21 +115,20 @@ class IMUWrap():
     
     def __init__(self) -> None:
         self.magBias   : np.ndarray = np.array([0, 0, 0], dtype="float64")
-
-        self.magNull   : np.ndarray = np.array([[0, 0], [0, 0], [0, 0]])
-
         self.magnetic     : np.ndarray = None
-
         self.magThreshold = 0
     
     def setThreshold(self, threshold):
+        """Sets the threshold for the magnetNear function."""
         self.magThreshold = threshold
 
     def setBias(self):
+        """Sets the bias for the magnetic reading"""
         biases = AvgCali(IMU, 100, 0.04)
         self.magBias = np.array(biases[-3:len(biases)])
 
     def update(self, verbose = False):
+        """Updates the magnetic reading."""
         self.magnetic = np.array([float(x) for x in IMU.readMagnet().values()]) - self.magBias
 
         if verbose:
@@ -131,9 +137,11 @@ class IMUWrap():
     
     @property
     def magneticMagnitude(self) -> float:
+        """Returns the magnitude of the magnetic reading."""
         return np.sqrt((self.magnetic**2).sum())
 
     def magnetNear(self, threshold = None) -> bool:
+        """Returns true if the magnetic reading is above the threshold (so 1 tile away)"""
         if threshold == None: threshold = self.magThreshold
         return self.magneticMagnitude >= threshold
     
@@ -156,6 +164,7 @@ class Motor():
         BP.set_motor_position(self.pin, position)
 
     def update(self):
+        """Updates the motor power, capping it at maxPower and minPower."""
         if abs(self.power) > maxPower:
             self.power = copysign(maxPower, self.power)
         elif abs(self.power) < minPower:
@@ -177,16 +186,15 @@ class DriveTrain():
         self.reverse = False
 
     def setAllPowers(self, power):
+        """Sets the power of both motors to the same value."""
         self.left.setPower(power)
         self.right.setPower(power)
         self.reverse = power < 0
     
     def reduceLeft(self, reduce):
-        # self.left.power -= copysign(reduce, self.left.power)
         self.left.power -= reduce
 
     def reduceRight(self, reduce):
-        # self.right.power -= copysign(reduce, self.right.power)
         self.right.power -= reduce
 
     def adjustPowers(self, adjustment):
@@ -201,7 +209,6 @@ class DriveTrain():
         self.right.setPower(power)
 
     def turn(self, direction : bool, power):
-        # :param direction: True = Right, False = left
         self.setRight(power - 2 * power * direction)
         self.setLeft(power - 2 * power * (not direction))
 
@@ -243,7 +250,7 @@ class PIDController():
     # --------------- update section ---------------
     def update(self, verbose = False, value = None):
         self.lastError = self.error
-        if value is not None:
+        if value is None:
             self.error = self.target - self.sensor.value
         else:
             self.error = self.target - value
@@ -263,6 +270,7 @@ class PIDController():
         print(f"Output:            {self.output:.2f}\n")
     
     def setOutput(self):
+        """Sets the output of the PID controller."""
         self.partialOut    = self.error * self.Kp
         self.integralOut   = self.totalError * self.Ki
         self.derivativeOut = self.Kd*(self.error - self.lastError)/period
@@ -273,8 +281,8 @@ class PIDController():
     def setTarget(self, target):
         self.target = target
 
-
     def goToTarget(self, motorFunc):
+        """Moves until the error is within the margin for X frames."""
         goodFrames = 0
         while goodFrames <= 2:
             Sensor.updateAll()
@@ -284,6 +292,9 @@ class PIDController():
             goodFrames = goodFrames + 1 if abs(self.error) < self.margin else 0
         
         # motorFunc(0)
+
+    def resetIntegral(self):
+        self.integralOut = 0
 
 
 
@@ -444,6 +455,31 @@ class Tile():
 class outException(Exception):
     pass
 
+class Hazard():
+
+    def __init__(self, position, intensity, parameter, name) -> None:
+        self.position = np.array(position)
+        self.intensity = intensity
+        self.parameter = parameter
+        self.name = name
+    
+    @property
+    def x(self) -> float:
+        return self.position[0]
+    
+    @x.setter
+    def x(self, value):
+        self.position[0] = value
+    
+    @property
+    def y(self) -> float:
+        return self.position[1]
+    
+    @y.setter
+    def y(self, value):
+        self.position[1] = value
+
+
 class Map():
     # all position vectors are in the form (y, x)
 
@@ -461,8 +497,10 @@ class Map():
         self.exit = None
         self.exitDirection = None
         self.out = False
+        self.hazards = []
 
     def setup(self, startingPos, scale):
+        """Sets up the map with the starting position and scale"""
         self.scale = scale
 
         for y in range(self.tiles.shape[0]):
@@ -479,10 +517,13 @@ class Map():
         self.tiles[position].setEdge(direction, type)
     
     def getGridPosition(self, position):
+        """Returns the grid position of a given spacial position vector"""
         return (round(position[1] / (self.scale-0.5)), round(position[0] / (self.scale-0.5)))
         
     
     def updateCurrentTile(self):
+        """Updates the current tile based on the navigator's position, 
+        determines if the exit is found"""
         position = self.getGridPosition(self.navigator.position)
         try:
             if position[0] < 0 or position[1] < 0: raise IndexError
@@ -502,6 +543,7 @@ class Map():
 
 
     def updateEdges(self):
+        """Updates the edges of the current tile based on the navigator's distance sensors"""
         for direction in Direction:
             print(direction.name, self.navigator.distances[direction])
             # set edge of current tile
@@ -513,6 +555,7 @@ class Map():
             edgeFound = False
             
             while (tileShift) * self.scale < self.navigator.distances[direction]:
+                # print("TILE:", tilePosition)
                 self.tiles[tuple(tilePosition)].setEdge(direction, edgeType.open)
                 tilePosition += self.directionalAdditors[direction]
                 try:
@@ -534,6 +577,7 @@ class Map():
     
 
     def checkExplored(self, originalTile, originalDirection):
+        """Checks the percentage of explored tiles from a given tile in a given direction"""
         totalTiles = [originalTile]
         stepTiles = [originalTile]
         nextStepTiles = [self.tiles[tuple(originalTile.position + self.directionalAdditors[originalDirection])]]
@@ -561,27 +605,69 @@ class Map():
         return (numUnknowTiles, unknownPercentage)
 
     def getAdjacentTiles(self, tile : Tile):
+        """Returns a dictionary of the adjacent tiles to a given tile"""
         adjacentTiles = {}
         for direction in Direction:
             if tile.edges[direction.value] == edgeType.open:
                 adjacentTiles[direction] = self.tiles[tuple(tile.position + self.directionalAdditors[direction])]
         return adjacentTiles
     
-    def addHeatHazard(self, direction : Direction):
+    def addHeatHazard(self, direction : Direction, intensity):
+        """Adds a heat hazard to the map in a given direction from the current tile"""
         self.tiles[tuple(self.currentTile.position + self.directionalAdditors[direction])].type = tileType.heatHazard
+        print("ADDED HEAT:", self.currentTile.position, self.currentTile.position + self.directionalAdditors[direction])
+        position = self.currentTile.position + self.directionalAdditors[direction]
+        position = (position[1] * self.scale, position[0] * self.scale)
+        self.hazards.append(Hazard(position, intensity, "Radiated Power (W)", "Heat Hazard"))
+        
     
-    def addMagnetHazard(self, direction : Direction):
+    def addMagnetHazard(self, direction : Direction, intensity):
+        """Adds a magnet hazard to the map in a given direction from the current tile"""
         self.tiles[tuple(self.currentTile.position + self.directionalAdditors[direction])].type = tileType.magnetHazard
+        print("ADDED MAGNET:", self.currentTile.position, self.currentTile.position + self.directionalAdditors[direction])
+        position = self.currentTile.position + self.directionalAdditors[direction]
+        position = (position[1] * self.scale, position[0] * self.scale)
+        self.hazards.append(Hazard(position, intensity, "Magnetic Field Strength (uT)", "Magnet Hazard"))
 
     def printMapEdges(self):
         for tile in self.tiles.flat:
-            print(tile.position, tile.edges)
+            print(tile.position, tile.edges, tile.type.name)
     
 
     def makeMap(self):
+        """Makes a map from the current tiles and saves it to a csv file"""
         tileTypes = np.array([[tile.type.value for tile in row] for row in self.tiles], dtype="int16")
 
-        np.savetxt("map.txt", tileTypes)
+        #get origin tile
+        originTile : Tile = None
+        for tile in self.tiles.flat:
+            if tile.type == tileType.origin:
+                originTile = tile
+                break
+
+        mapNum = input('Which map number? ')
+
+        with open("team87_map.csv", "w") as file:
+            file.write("Team: 87\n")
+            file.write(f"Map: {mapNum}\n")
+            file.write(f"Unit length: {self.scale}\n")
+            file.write(f"Origin: {originTile.position[0]}, {originTile.position[1]}\n")
+            file.write("Notes: \n")
+            for row in range(tileTypes.shape[0] - 1, -1, -1):
+                for col in range(tileTypes.shape[1]):
+                    file.write(str(tileTypes[row][col]))
+                    if col < tileTypes.shape[1] - 1: file.write(",")
+                file.write("\n")
+        
+        with open("team87_hazards.csv", "w") as file:
+            file.write("Team: 87\n")
+            file.write(f"Map: {mapNum}\n")
+            file.write("Notes: \n\n")
+            file.write("Resource Type,Parameter of Interest,Parameter,Resource X Coordinate, Resource Y Coordinate\n")
+            for hazard in self.hazards:
+                hazard : Hazard
+                file.write(f"{hazard.name},{hazard.parameter},{hazard.intensity},{hazard.position[0]} cm,{hazard.position[1]} cm\n")
+            
 
 
 
@@ -656,19 +742,22 @@ class Navigator():
             greaterDirection = Direction.up
 
         self.magDirection = Direction((greaterDirection.value + self.direction.value) % 4)
+        # self.magDirection = Direction.flip(self.magDirection)
 
         if self.magneticSensor.magnetNear():
-            self.map.addMagnetHazard(self.magDirection)
+            self.map.addMagnetHazard(self.magDirection, self.magneticSensor.magneticMagnitude)
 
     def updateIRReading(self):
         self.foundIR = self.IRSensor.value > 0.0
         if self.foundIR:
-            self.map.addHeatHazard(self.direction)
+            self.map.addHeatHazard(self.direction, self.IRSensor.value - self.IRSensor.bias)
 
     def flushMap(self):
         self.map.update()
 
     def getInstruction(self) -> NavigationOption:
+        """Returns the next instruction for the robot to follow
+        considering the current state of the map and the sensors"""
         try:
             if self.map.exitDirection is not None: raise Exception("Exit Found")
             explorationValues = {}
@@ -723,18 +812,9 @@ class Navigator():
 
 
 
-
-
-
 def delay():
     input("Press Enter when ready")
     print("------  GO! ------\n")
-
-def follow(sensor : Sensor):
-    if sensor.value.__class__ is float:
-        print(round(sensor.value, 1))
-    else:
-        print(sensor.value)
 
 
 """

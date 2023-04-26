@@ -9,16 +9,16 @@ Left  = Sensor(sensorType.grove, sensorType.ultraSonic, 2)
 Right = Sensor(sensorType.grove, sensorType.ultraSonic, 3)
 Front = Sensor(sensorType.brick, sensorType.ultraSonicNXT, 1)
 
-IR = Sensor(sensorType.grove, sensorType.analog, 2)
-IR2 = Sensor(sensorType.grove, sensorType.analog, 1)
+IR = Sensor(sensorType.grove, sensorType.analog, 1)
+# IR2 = Sensor(sensorType.grove, sensorType.analog, 1)
 
 LegoGyro = Sensor(sensorType.brick, sensorType.gyro, 2)
 
-PIDGyro     = PIDController(1.45, 0.004, 0.04, LegoGyro, 0, 2)
+PIDGyro     = PIDController(1.45, 0.001, 0.04, LegoGyro, 0, 2.5)
 PIDGyro.maxOutput -= 10
 # PIDGyro.maxOutput = 60
 
-PIDStraight = PIDController(20, 0.1, 0.1, Left, 0, 2)
+PIDStraight = PIDController(17.5, 0, 0.005, Left, 0, 2)
 
 leftMotor  = Sensor(sensorType.brick, sensorType.motor, "B")
 rightMotor = Sensor(sensorType.brick, sensorType.motor, "C")
@@ -33,10 +33,6 @@ PositionTracker.gyro = LegoGyro
 drive = DriveTrain("B", "C")
 IMUWrap.driveRef = drive
 
-# --* Navigation *--
-
-
-# --* Gate control *--
 
 # ----- interrupt hook -----
 
@@ -76,10 +72,10 @@ except brickpi3.SensorError:
 
 if (input("Create map? (y/n): ") == "y"):
     scale = 40
-    sideLength = int(input("Enter the number of tiles in a side: "))
+    sideLength = tuple([int(num) for num in (input("Enter the number of tiles in a side: ")).split(",")])
     origin = [int(i) for i in input("Enter the origin position: ").split(",")]
 
-    areaMap = Map((sideLength, sideLength))
+    areaMap = Map(sideLength)
     areaMap.setup(origin, scale)
     Position.y = origin[0] * scale
     Position.x = origin[1] * scale
@@ -95,9 +91,6 @@ if (input("Create map? (y/n): ") == "y"):
 
     print("Navigator created")
 
-
-
-
 # --------------------- Line sensors & IMU calibration --------------------
 
 # biasMulti = 0.2
@@ -107,12 +100,16 @@ if (input("Calibrate Magnetic sensor? (y/n): ") == "y"):
     print("Got Magnetic Bias")
     input("Place robot next to beacon")
     magneticSensor.update()
-    magneticSensor.magThreshold = magneticSensor.magneticMagnitude * 0.8
+    magneticSensor.magThreshold = magneticSensor.magneticMagnitude * 1.15
+else:
+    magneticSensor.magThreshold = 9999
 
 if (input("Calibrate IR sensor next to beacon? (y/n): ") == "y"):
-    IR.calibrateBias()
-    IR.bias *= 0.8
+    IR.calibrateBias(multi = 0.95)
     print("Calibrated IR sensor")
+else:
+    IR.biased = True
+    IR.bias = -9999
 
 print("Calibration over\n")
 
@@ -128,18 +125,15 @@ def driveForward(power):
     drive.setAllPowers(power)
     drive.update()
 
-def driveStraight(base, orthoDistance):
+def driveStraight(base, orthoDistance, adjustSign):
+    """Drives straight using the gyro and the side distance sensors"""
     drive.setAllPowers(base)
     Sensor.updateAll()
     PIDGyro.update()
     PIDStraight.update(value = orthoDistance)
 
-    adjustSign = 1 if Position.direction == Direction.up or Position.direction == Direction.right else -1
     drive.adjustPowers(PIDStraight.output * adjustSign)
-    # drive.adjustPowers(-PIDGyro.output)
-
-    # drive.reduceRight(PIDGyro.output)
-    # drive.reduceLeft(-PIDGyro.output)
+    avoidWalls()
 
     drive.update()
     
@@ -175,18 +169,20 @@ def driveToWall():
 
 
 def driveDistance(distance):
+    """Drives a certain distance in cm"""
     select = 1 if Position.direction.value % 2 == 0 else 0
     start = Position.position[select]   
     orthogonalStart = areaMap.currentTile.position[select] * areaMap.scale
 
-    print("Start Rotation: ", Position.rotation)
     angleTarget = (Position.rotation + 45) // 90 * 90 
 
     PIDGyro.setTarget(angleTarget)
+    adjustSign = 1 if Position.direction == Direction.up or Position.direction == Direction.left else -1
 
     while (abs(Position.position[select] - start) < distance):
         driveStraight(basePower + (distance - abs(Position.position[select] - start)), 
-                      Position.position[not select] - orthogonalStart)
+                      Position.position[int(not select)] - orthogonalStart,
+                      adjustSign)
         sleep(period)
         Position.update()
 
@@ -194,11 +190,12 @@ def driveDistance(distance):
     if areaMap.currentTile[Position.direction] == edgeType.wall:
         driveToWall()
 
+    Position.update()
+    angleTarget = (Position.rotation + 45) // 90 * 90 
+    turnRelative(angleTarget - Position.rotation)
+
     drive.stop()
         
-
-
-
 
 def dropCargo():
     cargoMotor.goToPosition(-80)
@@ -207,20 +204,5 @@ def closeCargo():
     cargoMotor.goToPosition(0)
     
     
-
-
-
-# ----- cargo control functions -----
-
-
-
-
-
-
-# ------
-
-    
-
-
 # start
 delay()
